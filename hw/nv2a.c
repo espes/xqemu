@@ -36,6 +36,12 @@
 #include <OpenGL/CGLTypes.h>
 #include <OpenGL/CGLCurrent.h>
 #include <GLUT/glut.h>
+#elif defined(_WIN32)
+#include <GL/glew.h>
+#include <GL/gl.h>
+#include <GL/glext.h>
+#include <GL/wglext.h>
+#include <GL/glut.h>
 #else
 #include <X11/Xlib.h>
 #include <GL/gl.h>
@@ -44,8 +50,9 @@
 #endif
 
 #include "nv2a.h"
+#include "gl/gloffscreen.h"
 
-//#define DEBUG_NV2A
+#define DEBUG_NV2A
 #ifdef DEBUG_NV2A
 # define NV2A_DPRINTF(format, ...)       printf(format, ## __VA_ARGS__)
 #else
@@ -766,7 +773,7 @@ typedef struct GraphicsContext {
     uint32_t zstencil_clear_value;
     uint32_t color_clear_value;
 
-    CGLContextObj gl_context;
+    GloContext *gl_context;
 
     GLuint gl_framebuffer;
     GLuint gl_renderbuffer;
@@ -1051,7 +1058,7 @@ static void load_graphics_object(NV2AState *d, hwaddr instance_address,
         kelvin = &obj->data.kelvin;
 
         /* generate vertex programs */
-        for (i=0; i<NV2A_VERTEXSHADER_SLOTS; i++) {
+        for (i = 0; i < NV2A_VERTEXSHADER_SLOTS; i++) {
             VertexShader *shader = &kelvin->vertexshaders[i];
             glGenProgramsARB(1, &shader->gl_program);
         }
@@ -1062,7 +1069,7 @@ static void load_graphics_object(NV2AState *d, hwaddr instance_address,
         kelvin->fragment_program_dirty = true;
 
         /* generate textures */
-        for (i=0; i<NV2A_MAX_TEXTURES; i++) {
+        for (i = 0; i < NV2A_MAX_TEXTURES; i++) {
             Texture *texture = &kelvin->textures[i];
             glGenTextures(1, &texture->gl_texture);
             glGenTextures(1, &texture->gl_texture_rect);
@@ -1485,45 +1492,38 @@ static void kelvin_read_surface(NV2AState *d, KelvinState *kelvin)
 
 static void pgraph_context_init(GraphicsContext *context)
 {
-    /* TODO: context creation on linux */
-    CGLPixelFormatAttribute attributes[] = {
-        kCGLPFAAccelerated,
-        (CGLPixelFormatAttribute)0
-    };
 
-    CGLPixelFormatObj pix;
-    GLint num;
-    CGLChoosePixelFormat(attributes, &pix, &num);
-    CGLCreateContext(pix, NULL, &context->gl_context);
-    CGLDestroyPixelFormat(pix);
+    context->gl_context = glo_context_create(GLO_FF_DEFAULT);
 
-    CGLSetCurrentContext(context->gl_context);
-
+    /* TODO: create glo functions for Mac */
 
     /* Check context capabilities */
     const GLubyte *extensions;
     extensions = glGetString (GL_EXTENSIONS);
 
-    assert(gluCheckExtension((const GLubyte*)"GL_EXT_texture_compression_s3tc",
+    assert(glo_check_extension((const GLubyte *)
+                             "GL_EXT_texture_compression_s3tc",
                              extensions));
 
-    assert(gluCheckExtension((const GLubyte*)"GL_EXT_framebuffer_object",
+    assert(glo_check_extension((const GLubyte *)
+                             "GL_EXT_framebuffer_object",
                              extensions));
 
-    assert(gluCheckExtension((const GLubyte*)"GL_ARB_vertex_program",
+    assert(glo_check_extension((const GLubyte *)
+                             "GL_ARB_vertex_program",
                              extensions));
 
-    assert(gluCheckExtension((const GLubyte*)"GL_ARB_fragment_program",
+    assert(glo_check_extension((const GLubyte *)
+                             "GL_ARB_fragment_program",
                              extensions));
 
-    assert(gluCheckExtension((const GLubyte*)"GL_ARB_texture_rectangle",
+    assert(glo_check_extension((const GLubyte *)
+                             "GL_ARB_texture_rectangle",
                              extensions));
 
     GLint max_vertex_attributes;
     glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &max_vertex_attributes);
     assert(max_vertex_attributes >= NV2A_VERTEXSHADER_ATTRIBUTES);
-
-
 
     glGenFramebuffersEXT(1, &context->gl_framebuffer);
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, context->gl_framebuffer);
@@ -1545,29 +1545,28 @@ static void pgraph_context_init(GraphicsContext *context)
 
     assert(glGetError() == GL_NO_ERROR);
 
-
-    CGLSetCurrentContext(NULL);
+    glo_set_current(NULL);
 }
 
 static void pgraph_context_set_current(GraphicsContext *context)
 {
     if (context) {
-        CGLSetCurrentContext(context->gl_context);
+        glo_set_current(context->gl_context);
     } else {
-        CGLSetCurrentContext(NULL);
+        glo_set_current(NULL);
     }
 }
 
 static void pgraph_context_destroy(GraphicsContext *context)
 {
-    CGLSetCurrentContext(context->gl_context);
+    glo_set_current(context->gl_context);
 
     glDeleteRenderbuffersEXT(1, &context->gl_renderbuffer);
     glDeleteFramebuffersEXT(1, &context->gl_framebuffer);
 
-    CGLSetCurrentContext(NULL);
+    glo_set_current(NULL);
 
-    CGLDestroyContext(context->gl_context);
+    glo_context_destroy(context->gl_context);
 }
 
 static void pgraph_method(NV2AState *d,
