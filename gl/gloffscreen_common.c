@@ -124,6 +124,15 @@ void glo_readpixels(GLenum gl_format, GLenum gl_type,
     /* TODO: weird strides */
     assert(stride % bytes_per_pixel == 0);
 
+/*
+static unsigned int frameskip = 0;
+if ((frameskip++ % 300) != 0) {
+  glFlush();
+  glFinish();
+  return;
+}
+*/
+
     /* Save guest processes GL state before we ReadPixels() */
     int rl, pa;
     glGetIntegerv(GL_PACK_ROW_LENGTH, &rl);
@@ -161,4 +170,5 @@ void glo_readpixels(GLenum gl_format, GLenum gl_type,
     /* Restore GL state */
     glPixelStorei(GL_PACK_ROW_LENGTH, rl);
     glPixelStorei(GL_PACK_ALIGNMENT, pa);
+
 }

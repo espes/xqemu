@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#import <mach-o/dyld.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -73,6 +74,24 @@ GLboolean glo_check_extension(const GLubyte *extName,
     const GLubyte *extString)
 {
     return gluCheckExtension(extName, extString);
+}
+
+void* glo_get_extension_proc(const GLubyte *extProc)
+{
+    /* Not really possible with CGL? */
+    /* Using alternative from https://developer.apple.com/library/mac/documentation/graphicsimaging/conceptual/opengl-macprogguide/opengl_entrypts/opengl_entrypts.html */
+
+    NSSymbol symbol;
+    char *symbol_name;
+    symbol_name = g_malloc0(strlen (name) + 2);
+    strcpy(symbol_name + 1, name);
+    symbol_name[0] = '_';
+    symbol = NULL;
+    if (NSIsSymbolNameDefined(symbol_name)) {
+        symbol = NSLookupAndBindSymbol(symbol_name);
+    }
+    free(symbol_name);
+    return symbol?NSAddressOfSymbol(symbol):NULL;
 }
 
 /* Set current context */

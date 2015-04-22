@@ -36,6 +36,7 @@
 #include "sysemu/blockdev.h"
 #include "hw/loader.h"
 #include "exec/address-spaces.h"
+#include "qemu/config-file.h"
 
 #include "hw/xbox/xbox_pci.h"
 #include "hw/xbox/nv2a.h"
@@ -148,6 +149,15 @@ void xbox_init_common(QEMUMachineInitArgs *args,
 
 
     DeviceState *icc_bridge;
+
+    const char *eeprom_filename;
+
+    /* Parse options */
+    QemuOpts *machine_opts = qemu_opts_find(qemu_find_opts("machine"), 0);
+    if (machine_opts) {
+        eeprom_filename = qemu_opt_get(machine_opts, "eeprom");
+    }
+
     icc_bridge = qdev_create(NULL, TYPE_ICC_BRIDGE);
     object_property_add_child(qdev_get_machine(), "icc-bridge",
                               OBJECT(icc_bridge), NULL);
@@ -217,7 +227,25 @@ void xbox_init_common(QEMUMachineInitArgs *args,
 
     /* smbus devices */
     uint8_t *eeprom_buf = g_malloc0(256);
-    memcpy(eeprom_buf, default_eeprom, 256);
+    if (eeprom_filename) {
+        int rc, fd = -1;
+        int eeprom_size = get_image_size(eeprom_filename);
+        assert(eeprom_size <= 256);
+  
+        /* FIXME: Warning if eeprom_size != 256? */
+
+        fd = open(eeprom_filename, O_RDONLY | O_BINARY);
+        if (fd == -1) {
+            fprintf(stderr, "qemu: could not load xbox EEPROM '%s'\n", eeprom_filename);
+            exit(1);
+        }
+        assert(fd != -1);
+        rc = read(fd, eeprom_buf, eeprom_size);
+        assert(rc == eeprom_size);
+        close(fd);
+    } else {
+      memcpy(eeprom_buf, default_eeprom, 256);
+    }
     smbus_eeprom_init_single(smbus, 0x54, eeprom_buf);
     
     smbus_xbox_smc_init(smbus, 0x10);

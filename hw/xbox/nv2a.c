@@ -35,7 +35,7 @@
 
 #include "hw/xbox/nv2a.h"
 
-#define DEBUG_NV2A
+//#define DEBUG_NV2A
 #ifdef DEBUG_NV2A
 # define NV2A_DPRINTF(format, ...)       printf("nv2a: " format, ## __VA_ARGS__)
 #else
@@ -2235,8 +2235,6 @@ static void pgraph_method(NV2AState *d,
 
     pgraph_method_log(subchannel, object->graphics_class, method, parameter);
 
-    glo_set_current(pg->gl_context);
-
     if (method == NV_SET_OBJECT) {
         subchannel_data->object_instance = parameter;
 
@@ -2383,6 +2381,25 @@ static void pgraph_method(NV2AState *d,
 
     case NV097_FLIP_STALL:
         pgraph_update_surface(d, false);
+
+        /* Tell the debugger that the frame was completed */
+        //FIXME: Figure out if this is a good position, we really have to figure out what a frame is:
+        //       - When a pull from the VGA controller happens?
+        //       - Result at vblank?
+        //       - When D3D completes a frame?
+        //       - ...
+        static bool initialized = false;
+        static void(*imported_glFrameTerminatorGREMEDY)(void) = NULL;
+        if (!initialized) {
+            const GLubyte *extensions = glGetString(GL_EXTENSIONS);
+            if (glo_check_extension((const GLubyte *)"GL_GREMEDY_frame_terminator",extensions)) {
+                imported_glFrameTerminatorGREMEDY = glo_get_extension_proc((const GLubyte *)"glFrameTerminatorGREMEDY");
+            }
+            initialized = true;
+        }
+        if (imported_glFrameTerminatorGREMEDY) {
+            imported_glFrameTerminatorGREMEDY();
+        }
 
         qemu_mutex_unlock(&pg->lock);
         qemu_sem_wait(&pg->read_3d);
@@ -3051,10 +3068,14 @@ static void *pfifo_puller_thread(void *arg)
     CacheEntry *command;
     RAMHTEntry entry;
 
+    PGRAPHState *pg = &d->pgraph;
+    glo_set_current(pg->gl_context);
+
     while (true) {
         qemu_mutex_lock(&state->pull_lock);
         if (!state->pull_enabled) {
             qemu_mutex_unlock(&state->pull_lock);
+            glo_set_current(NULL);
             return NULL;
         }
         qemu_mutex_unlock(&state->pull_lock);
@@ -3068,6 +3089,7 @@ static void *pfifo_puller_thread(void *arg)
             if (!state->pull_enabled) {
                 qemu_mutex_unlock(&state->pull_lock);
                 qemu_mutex_unlock(&state->cache_lock);
+                glo_set_current(NULL);
                 return NULL;
             }
             qemu_mutex_unlock(&state->pull_lock);
@@ -3140,6 +3162,7 @@ static void *pfifo_puller_thread(void *arg)
         g_free(command);
     }
 
+    glo_set_current(NULL);
     return NULL;
 }
 

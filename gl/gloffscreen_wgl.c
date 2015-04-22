@@ -288,8 +288,8 @@ void glo_context_destroy(GloContext *context)
 GLboolean glo_check_extension(const GLubyte *extName,
     const GLubyte *extString)
 {
-    char *p = (char *) glGetString(GL_EXTENSIONS);
-    char *end;
+    const char *p = extString;
+    const char *end;
     if (p == NULL) {
         return GL_FALSE;
     }
@@ -303,4 +303,9 @@ GLboolean glo_check_extension(const GLubyte *extName,
         p += (n + 1);
     }
     return GL_FALSE;
+}
+
+void* glo_get_extension_proc(const GLubyte *extProc)
+{
+    return wglGetProcAddress((LPCSTR)extProc); 
 }
