@@ -30,8 +30,11 @@ env:
   - TARGETS=sparc-softmmu,sparc64-softmmu
   - TARGETS=unicore32-softmmu
   - TARGETS=xtensa-softmmu,xtensaeb-softmmu
+git:
+  # we want to do this ourselves
+  submodules: false
 before_install:
-  - git submodule update --init --recursive
+  #- git submodule update --init --recursive
   - sudo apt-get update -qq
   - sudo apt-get install -qq ${CORE_PKGS} ${NET_PKGS} ${GUI_PKGS} ${EXTRA_PKGS}
 script: "./configure --target-list=${TARGETS} ${EXTRA_CONFIG} && make && ${TEST_CMD}"
@@ -40,8 +43,8 @@ matrix:
   include:
     # Debug related options
     - env: TARGETS=i386-softmmu,x86_64-softmmu
-           EXTRA_CONFIG="--enable-debug"
       compiler: gcc
+           EXTRA_CONFIG="--enable-debug"
     - env: TARGETS=i386-softmmu,x86_64-softmmu
            EXTRA_CONFIG="--enable-debug --enable-tcg-interpreter"
       compiler: gcc
@@ -69,3 +72,87 @@ matrix:
     #- env: TARGETS=i386-softmmu,x86_64-softmmu
     #       EXTRA_PKGS="liblttng-ust-dev liburcu-dev"
     #       EXTRA_CONFIG="--enable-trace-backend=ust"
+# XQEMU
+before_script:
+  # Travis CI / Ubuntu 12.04 GLEW is too old
+  - wget http://downloads.sourceforge.net/project/glew/glew/1.12.0/glew-1.12.0.tgz
+  - tar -xzvf glew-1.12.0.tgz
+  - cd glew-1.12.0
+  # GLEW sucks, we'll just create a fake output dir
+  - mkdir /tmp/glew/
+  - ln -s ${LIB_PATH} /tmp/glew/lib
+  - if [ "$I386" = true ]; then true
+      && GLEW_FLAGS=-m32
+    ;else true; fi
+  - if [ "$X86_64" = true ]; then true
+      && GLEW_FLAGS=-m64
+    ;else true; fi
+  - cmake -DCMAKE_INSTALL_PREFIX=/tmp/glew -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_C_FLAGS="${GLEW_FLAGS}" -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CXX_FLAGS="${GLEW_FLAGS}" .
+  - unset GLEW_FLAGS
+  - make && sudo make install
+  - ls -l /tmp/glew
+  - sudo rm -rf /tmp/glew
+  # GLEW *sucks*, it doesn't install the headers..
+  - sudo cp -R include/* /usr/include
+  - cd ..
+install:
+  - export EXTRA_CONFIG="--enable-opengl --disable-vnc --disable-user --enable-kvm --disable-xen --disable-werror --enable-debug"
+  # 64 bit
+  - if [ "$X86_64" = true ] ; then true
+      && echo "64 Bit"
+      && sudo apt-get install zlib1g-dev libgl1-mesa-dev freeglut3-dev
+      && export EXTRA_CONFIG="--extra-cflags=-m64 ${EXTRA_CONFIG}"
+      && export LIB_PATH=/usr/lib/x86_64-linux-gnu
+    ;else true; fi
+  # 32 bit - We don't need java and it makes the update somewhat slower..
+  #          Also this breaks /usr/bin/gcc somehow so we add it again
+  #          We also have to deinstall libssh2-1 or we get errors
+  - if [ "$I386" = true ]; then true
+      && echo "32 Bit"
+      && sudo apt-get remove oracle-java7-installer oracle-java8-installer
+      && sudo apt-get install gcc-multilib g++-multilib
+      && sudo apt-get install pkg-config:i386 libc6-dev:i386
+      && sudo apt-get install libglib2.0-dev:i386 --no-install-recommends
+      && sudo apt-get install libpixman-1-dev:i386 libx11-dev:i386
+      && sudo apt-get install lib32z1-dev libx11-dev:i386 libxmu-dev:i386 libxi-dev:i386 libsm-dev:i386 libxt-dev:i386 libxext-dev:i386 libgl1-mesa-dev:i386 libglu1-mesa-dev:i386 freeglut3:i386 freeglut3-dev:i386
+      && sudo apt-get install libssh2-1:i386
+      && sudo apt-get install libssh2-1-dev:i386
+      && sudo ln -s /usr/bin/gcc-4.6 /usr/bin/gcc
+      && sudo ln -s /usr/bin/g++-4.6 /usr/bin/g++
+      && export EXTRA_CONFIG="--extra-cflags=-m32 ${EXTRA_CONFIG}"
+      && export LIB_PATH=/usr/lib/i386-linux-gnu
+    ;else true; fi
+  - echo "${LIB_PATH}"
+  - export TEST_CMD=""
+matrix: 
+  exclude:
+    - compiler: gcc
+    - compiler: clang
+  include:
+    - env: I386=true LINUX=true TARGETS=xbox-softmmu
+      compiler: clang
+    - env: I386=true LINUX=true TARGETS=xbox-softmmu
+      compiler: gcc
+    - env: X86_64=true LINUX=true TARGETS=xbox-softmmu
+      compiler: clang
+    - env: X86_64=true LINUX=true TARGETS=xbox-softmmu
+      compiler: gcc
+    #- env: I386=true WINDOWS=true TARGETS=xbox-softmmu
+    #  compiler: gcc
+    #- env: X86_64=true WINDOWS=true TARGETS=xbox-softmmu
+    #  compiler: gcc
+    #- env: I386=true OSX=true TARGETS=xbox-softmmu
+    #  compiler: clang
+    #- env: X86_64=true OSX=true TARGETS=xbox-softmmu
+    #  compiler: clang
+
+
+# Windows currently broken!
+#- env: EXTRA_CONFIG="--cross-prefix=i586-mingw32msvc"
+#       XQEMU_PKGS_64=""
+#       EXTRA_PKGS="gcc-mingw32 mingw32-binutils mingw32-runtime"
+#  compiler: gcc
+#- env: EXTRA_CONFIG="--cross-prefix=x86_64-w64-mingw32msvc"
+#       XQEMU_PKGS_32=""
+#       EXTRA_PKGS="gcc-mingw32 mingw32-binutils mingw-w64"
+#  compiler: gcc
