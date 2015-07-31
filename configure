@@ -350,10 +350,14 @@ EOF
   compile_object
 }
 
-if check_define __linux__ ; then
-  targetos="Linux"
-elif check_define _WIN32 ; then
+echo $targetos
+if check_define _WIN32 ; then
   targetos='MINGW32'
+elif check_define _WIN64 ; then
+  targetos='MINGW32'
+  echo "OOPSIE?!"
+elif check_define __linux__ ; then
+  targetos="Linux"
 elif check_define __OpenBSD__ ; then
   targetos='OpenBSD'
 elif check_define __sun__ ; then
@@ -363,6 +367,12 @@ elif check_define __HAIKU__ ; then
 else
   targetos=`uname -s`
 fi
+
+echo ""
+$cc --version
+echo ""
+echo "Running <$cc> [ld=<$ld>] with flags <$QEMU_CFLAGS>"
+echo $targetos
 
 # Some host OSes need non-standard checks for which CPU to use.
 # Note that these checks are broken for cross-compilation: if you're
@@ -2657,14 +2667,13 @@ if test "$opengl" != "no" ; then
 int main(void) { return GL_VERSION != 0; }
 EOF
   elif test "$mingw32" = "yes" ; then
-	opengl_libs="-lglut32win -lOpenGL32 -lglu32 -lglew32 -lgdi32"
+	opengl_libs="-lfreeglut -lopengl32 -lglu32 -lglew32 -lgdi32"
 	cat > $TMPC << EOF
 #include <windows.h>
 #include <GL/glew.h>
 #include <GL/gl.h>
-#include <GL/glext.h>
 #include <GL/wglext.h>
-#include <GL/glut.h>
+#include <GL/freeglut.h>
 int main(void) { return GL_VERSION != 0; }
 EOF
   else

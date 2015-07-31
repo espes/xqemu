@@ -79,36 +79,47 @@ before_script:
   - tar -xzvf glew-1.12.0.tgz
   - cd glew-1.12.0
   # GLEW sucks, we'll just create a fake output dir
-  - mkdir /tmp/glew/
-  - ln -s ${LIB_PATH} /tmp/glew/lib
   - if [ "$I386" = true ]; then true
       && GLEW_FLAGS=-m32
     ;else true; fi
   - if [ "$X86_64" = true ]; then true
       && GLEW_FLAGS=-m64
     ;else true; fi
-  - cmake -DCMAKE_INSTALL_PREFIX=/tmp/glew -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_C_FLAGS="${GLEW_FLAGS}" -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CXX_FLAGS="${GLEW_FLAGS}" .
-  - unset GLEW_FLAGS
+  - mkdir -p /tmp/glew/usr/include
+  - if [ "$LINUX" = true ] ; then true
+      && cmake -DCMAKE_INSTALL_PREFIX=/tmp/glew/usr -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_C_FLAGS="${GLEW_FLAGS}" -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CXX_FLAGS="${GLEW_FLAGS}" .
+    ;else true; fi
+  - if [ "$WINDOWS" = true ]; then true
+      && cmake -DPKG_CONFIG_EXECUTABLE=/usr/bin/${PREFIX}-pkg-config -DCMAKE_INSTALL_PREFIX=/tmp/glew/usr -DCMAKE_C_COMPILER=/usr/bin/${PREFIX}-gcc -DCMAKE_C_FLAGS="${GLEW_FLAGS}" -DCMAKE_CXX_COMPILER=/usr/bin/${PREFIX}-g++ -DCMAKE_CXX_FLAGS="${GLEW_FLAGS}" -DCMAKE_RC_COMPILER=/usr/bin/${PREFIX}-windres -DCMAKE_SYSTEM_NAME=Windows .
+    ;else true; fi
   - make && sudo make install
-  - ls -l /tmp/glew
+  - sudo cp -Rf include/* /tmp/glew/usr/include/
+  - sudo ls -R -l /tmp/glew/
+  - sudo cp -Rf /tmp/glew/usr/include/* ${INC_PATH}/
+  - sudo cp -Rf /tmp/glew/usr/lib/* ${LIB_PATH}/
   - sudo rm -rf /tmp/glew
-  # GLEW *sucks*, it doesn't install the headers..
-  - sudo cp -R include/* /usr/include
+  - unset GLEW_FLAGS
   - cd ..
+  - ls -l ${INC_PATH}
+  - ls -l ${LIB_PATH}
 install:
-  - export EXTRA_CONFIG="--enable-opengl --disable-vnc --disable-user --enable-kvm --disable-xen --disable-werror --enable-debug"
-  # 64 bit
-  - if [ "$X86_64" = true ] ; then true
-      && echo "64 Bit"
+  - export EXTRA_CONFIG="--enable-opengl --disable-vnc --disable-user --disable-xen --disable-werror --enable-debug"
+  - if [ "$LINUX" = true ] ; then true
+      && export EXTRA_CONFIG="--enable-kvm ${EXTRA_CONFIG}"
+    ;else true; fi  
+    # 64 bit Linux
+  - if  [ "$LINUX" = true ] && [ "$X86_64" = true ]; then true
+      && echo "64 Bit Linux"
       && sudo apt-get install zlib1g-dev libgl1-mesa-dev freeglut3-dev
       && export EXTRA_CONFIG="--extra-cflags=-m64 ${EXTRA_CONFIG}"
       && export LIB_PATH=/usr/lib/x86_64-linux-gnu
+      && export INC_PATH=/usr/include/x86_64-linux-gnu
     ;else true; fi
   # 32 bit - We don't need java and it makes the update somewhat slower..
   #          Also this breaks /usr/bin/gcc somehow so we add it again
   #          We also have to deinstall libssh2-1 or we get errors
-  - if [ "$I386" = true ]; then true
-      && echo "32 Bit"
+  - if  [ "$LINUX" = true ] && [ "$I386" = true ]; then true
+      && echo "32 Bit Linux"
       && sudo apt-get remove oracle-java7-installer oracle-java8-installer
       && sudo apt-get install gcc-multilib g++-multilib
       && sudo apt-get install pkg-config:i386 libc6-dev:i386
@@ -121,38 +132,100 @@ install:
       && sudo ln -s /usr/bin/g++-4.6 /usr/bin/g++
       && export EXTRA_CONFIG="--extra-cflags=-m32 ${EXTRA_CONFIG}"
       && export LIB_PATH=/usr/lib/i386-linux-gnu
+      && export INC_PATH=/usr/include/i386-linux-gnu
     ;else true; fi
-  - echo "${LIB_PATH}"
+  - if [ "$WINDOWS" = true ] && [ "$I386" = true ]; then true
+      && echo "32 Bit Windows"
+      && ARCH=i686
+      && PREFIX=i686-w64-mingw32
+      && USR_PREFIX=${PREFIX}
+      && WIN=win32
+      && C_FLAGS=-m32
+    ;else true; fi
+  - if [ "$WINDOWS" = true ] && [ "$X86_64" = true ]; then true
+      && echo "64 Bit Windows"
+      && ARCH=x86-64
+      && PREFIX=x86_64-w64-mingw32
+      && USR_PREFIX=${PREFIX}
+      && WIN=win64
+      && C_FLAGS=-m64
+    ;else true; fi
+  # Windows vars
+  - if  [ "$WINDOWS" = true ]; then true
+      && export EXTRA_CONFIG="--cross-prefix=${PREFIX}- --cc=${PREFIX}-gcc --extra-cflags=${C_FLAGS} ${EXTRA_CONFIG}"
+      && export LIB_PATH=/usr/${USR_PREFIX}/lib
+      && export INC_PATH=/usr/${USR_PREFIX}/include
+    ;else true; fi
+  # windows base and qemu deps
+  - if  [ "$WINDOWS" = true ]; then true
+      && sudo apt-get install binutils-mingw-w64-${ARCH} gcc-mingw-w64-${ARCH} g++-mingw-w64-${ARCH} gfortran-mingw-w64-${ARCH}
+      && echo -e '#!/bin/sh\nbasename=`basename $0`\nprefix=/usr/`echo $basename|sed s/-pkg-config//`\nPKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig\nexport PKG_CONFIG_LIBDIR\npkg-config --define-variable=prefix=$prefix $@' | sudo tee /usr/bin/${PREFIX}-pkg-config
+      && sudo chmod +x /usr/bin/${PREFIX}-pkg-config
+      && wget http://ftp.gnome.org/pub/gnome/binaries/${WIN}/glib/2.24/glib_2.24.2-2_${WIN}.zip
+      && sudo unzip glib_2.24.2-2_${WIN}.zip -d /usr/${USR_PREFIX}
+      && wget http://ftp.gnome.org/pub/gnome/binaries/${WIN}/glib/2.24/glib-dev_2.24.2-2_${WIN}.zip
+      && sudo unzip glib-dev_2.24.2-2_${WIN}.zip -d /usr/${USR_PREFIX}
+      && wget http://ftp.gnome.org/pub/gnome/binaries/${WIN}/dependencies/gettext-runtime-dev_0.18.1.1-2_${WIN}.zip
+      && sudo ln -s /usr/${USR_PREFIX}/lib/libintl.dll.a /usr/${USR_PREFIX}/lib/libintl.a
+      && sudo unzip gettext-runtime-dev_0.18.1.1-2_${WIN}.zip -d /usr/${USR_PREFIX}
+      && wget http://ftp.gnome.org/pub/gnome/binaries/${WIN}/dependencies/pixman-dev_0.18.4-1_${WIN}.zip
+      && sudo unzip pixman-dev_0.18.4-1_${WIN}.zip -d /usr/${USR_PREFIX}
+    ;else true; fi
+  # windows wgl-extension headers
+  - if  [ "$WINDOWS" = true ]; then true
+      && sudo wget http://www.opengl.org/registry/api/wglext.h -O ${INC_PATH}/GL/wglext.h
+    ;else true; fi
+  # OpenGL pkg-config
+  - if  [ "$WINDOWS" = true ]; then true
+      && echo -e 'Name:\x20gl\nVersion:\x200\nDescription:\x20OpenGL\nLibs:\x20-lopengl32' | sudo tee /usr/${USR_PREFIX}/lib/pkgconfig/gl.pc
+      && echo -e 'Name:\x20glu\nVersion:\x200\nDescription:\x20OpenGL\nLibs:\x20-lglu32' | sudo tee /usr/${USR_PREFIX}/lib/pkgconfig/glu.pc
+    ;else true; fi
+  # windows freeglut (bin package because we don't have cmake 2.8.8)
+  - if  [ "$WINDOWS" = true ]; then true
+      && wget http://files.transmissionzero.co.uk/software/development/GLUT/freeglut-MinGW.zip
+      && unzip freeglut-MinGW.zip
+      && sudo cp -R freeglut/include/* ${INC_PATH}/
+    ;else true; fi
+  - if  [ "$WINDOWS" = true ] && [ "$I386" = true ]; then true
+      && sudo cp -R freeglut/lib/*.a ${LIB_PATH}/
+    ;else true; fi
+  - if  [ "$WINDOWS" = true ] && [ "$X86_64" = true ]; then true
+      && sudo cp -R freeglut/lib/x64/*.a ${LIB_PATH}/
+    ;else true; fi
+  #- sudo ln -s /usr/${USR_PREFIX}/lib/libglut32.a /usr/${USR_PREFIX}/lib/libglut32win.a
+  # windows zlib
+  - if  [ "$WINDOWS" = true ]; then true
+      && wget http://zlib.net/zlib-1.2.8.tar.gz
+      && tar xvfz zlib-1.2.8.tar.gz
+      && cd zlib-1.2.8
+      && sudo make -f win32/Makefile.gcc PREFIX=${PREFIX}- BINARY_PATH=/usr/${USR_PREFIX}/bin INCLUDE_PATH=/usr/${USR_PREFIX}/include LIBRARY_PATH=/usr/${USR_PREFIX}/lib install
+      && cd ..
+    ;else true; fi
+      #&& wget http://www.libsdl.org/release/SDL-devel-1.2.15-mingw32.tar.gz
+      #&& tar -xzvf SDL-devel-1.2.15-mingw32.tar.gz
+      #&& cd SDL-1.2.15
+      #&& sudo make install-sdl prefix=/usr/${PREFIX}
+      #&& cd ..
   - export TEST_CMD=""
-matrix: 
+matrix:
   exclude:
     - compiler: gcc
     - compiler: clang
   include:
     - env: I386=true LINUX=true TARGETS=xbox-softmmu
       compiler: clang
-    - env: I386=true LINUX=true TARGETS=xbox-softmmu
-      compiler: gcc
+    #- env: I386=true LINUX=true TARGETS=xbox-softmmu
+    #  compiler: gcc
     - env: X86_64=true LINUX=true TARGETS=xbox-softmmu
       compiler: clang
-    - env: X86_64=true LINUX=true TARGETS=xbox-softmmu
+    #- env: X86_64=true LINUX=true TARGETS=xbox-softmmu
+    #  compiler: gcc
+    - env: I386=true WINDOWS=true TARGETS=xbox-softmmu
       compiler: gcc
-    #- env: I386=true WINDOWS=true TARGETS=xbox-softmmu
-    #  compiler: gcc
-    #- env: X86_64=true WINDOWS=true TARGETS=xbox-softmmu
-    #  compiler: gcc
+    - env: X86_64=true WINDOWS=true TARGETS=xbox-softmmu
+      compiler: gcc
+    # Missing feature flag and we probably have to change this file a lot
     #- env: I386=true OSX=true TARGETS=xbox-softmmu
     #  compiler: clang
     #- env: X86_64=true OSX=true TARGETS=xbox-softmmu
     #  compiler: clang
-
-
-# Windows currently broken!
-#- env: EXTRA_CONFIG="--cross-prefix=i586-mingw32msvc"
-#       XQEMU_PKGS_64=""
-#       EXTRA_PKGS="gcc-mingw32 mingw32-binutils mingw32-runtime"
-#  compiler: gcc
-#- env: EXTRA_CONFIG="--cross-prefix=x86_64-w64-mingw32msvc"
-#       XQEMU_PKGS_32=""
-#       EXTRA_PKGS="gcc-mingw32 mingw32-binutils mingw-w64"
-#  compiler: gcc
