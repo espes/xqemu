@@ -3048,7 +3048,10 @@ static void pgraph_set_surface_dirty(PGRAPHState *pg, bool color, bool zeta)
     pg->surface_zeta.draw_dirty |= zeta;
 }
 
-static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
+static void pgraph_update_surface_part(NV2AState *d,
+                                       bool upload,
+                                       bool color,
+                                       bool transfer) {
     PGRAPHState *pg = &d->pgraph;
 
     unsigned int width, height;
@@ -3141,17 +3144,15 @@ static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
     bool swizzle = (pg->surface_type == NV097_SET_SURFACE_FORMAT_TYPE_SWIZZLE);
 
     uint8_t *buf = data + surface->offset;
-    if (swizzle) {
+    if (transfer && swizzle) {
         buf = g_malloc(height * surface->pitch);
     }
 
     bool dirty = surface->buffer_dirty;
-    if (color) {
-        dirty |= memory_region_test_and_clear_dirty(d->vram,
-                                               dma.address + surface->offset,
-                                               surface->pitch * height,
-                                               DIRTY_MEMORY_NV2A);
-    }
+    dirty |= memory_region_test_and_clear_dirty(d->vram,
+                                           dma.address + surface->offset,
+                                           surface->pitch * height,
+                                           DIRTY_MEMORY_NV2A);
     if (upload && dirty) {
         /* surface modified (or moved) by the cpu.
          * copy it into the opengl renderbuffer */
@@ -3159,7 +3160,8 @@ static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
 
         assert(surface->pitch % bytes_per_pixel == 0);
 
-        if (swizzle) {
+        /* Swizzle data if neccessar */
+        if (transfer && swizzle) {
             unswizzle_rect(data + surface->offset,
                            width, height,
                            buf,
@@ -3167,7 +3169,12 @@ static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
                            bytes_per_pixel);
         }
 
-        if (!color) {
+        if (color) {
+            glFramebufferTexture2D(GL_FRAMEBUFFER,
+                       GL_COLOR_ATTACHMENT0,
+                       GL_TEXTURE_2D,
+                       0, 0);
+        } else {
             /* need to clear the depth_stencil and depth attachment for zeta */
             glFramebufferTexture2D(GL_FRAMEBUFFER,
                                    GL_DEPTH_ATTACHMENT,
@@ -3179,11 +3186,6 @@ static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
                                    0, 0);
         }
 
-        glFramebufferTexture2D(GL_FRAMEBUFFER,
-                               gl_attachment,
-                               GL_TEXTURE_2D,
-                               0, 0);
-
         if (*gl_buffer) {
             glDeleteTextures(1, gl_buffer);
             *gl_buffer = 0;
@@ -3192,22 +3194,28 @@ static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
         glGenTextures(1, gl_buffer);
         glBindTexture(GL_TEXTURE_2D, *gl_buffer);
 
-        /* This is VRAM so we can't do this inplace! */
-        uint8_t *flipped_buf = g_malloc(width * height * bytes_per_pixel);
-        unsigned int irow;
-        for (irow = 0; irow < height; irow++) {
-            memcpy(&flipped_buf[width * (height - irow - 1)
-                                     * bytes_per_pixel],
-                   &buf[surface->pitch * irow],
-                   width * bytes_per_pixel);
+        /* Only flip data if necessary */
+        uint8_t *flipped_buf = NULL;
+        if (transfer) {
+            /* This is VRAM so we can't do this inplace! */
+            flipped_buf = g_malloc(width * height * bytes_per_pixel);
+            unsigned int irow;
+            for (irow = 0; irow < height; irow++) {
+                memcpy(&flipped_buf[width * (height - irow - 1)
+                                         * bytes_per_pixel],
+                       &buf[surface->pitch * irow],
+                       width * bytes_per_pixel);
+            }
         }
 
         glTexImage2D(GL_TEXTURE_2D, 0, gl_internal_format,
                      width, height, 0,
                      gl_format, gl_type,
-                     flipped_buf);
+                     transfer ? flipped_buf : NULL);
 
-        g_free(flipped_buf);
+        if (flipped_buf) {
+            g_free(flipped_buf);
+        }
 
         glFramebufferTexture2D(GL_FRAMEBUFFER,
                                gl_attachment,
@@ -3241,6 +3249,7 @@ static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
     }
 
     if (!upload && surface->draw_dirty) {
+        assert(transfer);
         /* read the opengl framebuffer into the surface */
 
         glo_readpixels(gl_format, gl_type,
@@ -3262,10 +3271,8 @@ static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
                                        surface->pitch * height,
                                        DIRTY_MEMORY_VGA);
 
-        if (color) {
-            pgraph_update_memory_buffer(d, dma.address + surface->offset,
-                                        surface->pitch * height, true);
-        }
+        pgraph_update_memory_buffer(d, dma.address + surface->offset,
+                                    surface->pitch * height, true);
 
         surface->draw_dirty = false;
         surface->write_enabled_cache = false;
@@ -3285,13 +3292,14 @@ static void pgraph_update_surface_part(NV2AState *d, bool upload, bool color) {
 
     }
 
-    if (swizzle) {
+    if (transfer && swizzle) {
         g_free(buf);
     }
 }
 
 static void pgraph_update_surface(NV2AState *d, bool upload,
-                                  bool color_write, bool zeta_write)
+                                  bool color_shape, bool zeta_shape,
+                                  bool color_transfer, bool zeta_transfer)
 {
     PGRAPHState *pg = &d->pgraph;
 
@@ -3299,8 +3307,8 @@ static void pgraph_update_surface(NV2AState *d, bool upload,
                                           NV_PGRAPH_SETUPRASTER_Z_FORMAT);
 
     /* FIXME: Does this apply to CLEARs too? */
-    color_write = color_write && pgraph_color_write_enabled(pg);
-    zeta_write = zeta_write && pgraph_zeta_write_enabled(pg);
+    color_shape = color_shape && pgraph_color_write_enabled(pg);
+    zeta_shape = zeta_shape && pgraph_zeta_write_enabled(pg);
 
     if (upload && pgraph_framebuffer_dirty(pg)) {
         assert(!pg->surface_color.draw_dirty);
@@ -3337,15 +3345,15 @@ static void pgraph_update_surface(NV2AState *d, bool upload,
                sizeof(SurfaceShape));
     }
 
-    if ((color_write || (!upload && pg->surface_color.write_enabled_cache))
+    if ((color_shape || (!upload && pg->surface_color.write_enabled_cache))
         && (upload || pg->surface_color.draw_dirty)) {
-        pgraph_update_surface_part(d, upload, true);
+        pgraph_update_surface_part(d, upload, true, color_transfer);
     }
 
 
-    if ((zeta_write || (!upload && pg->surface_zeta.write_enabled_cache))
+    if ((zeta_shape || (!upload && pg->surface_zeta.write_enabled_cache))
         && (upload || pg->surface_zeta.draw_dirty)) {
-        pgraph_update_surface_part(d, upload, false);
+        pgraph_update_surface_part(d, upload, false, zeta_transfer);
     }
 }
 
@@ -3734,7 +3742,7 @@ static void pgraph_method(NV2AState *d,
         break;
 
     case NV097_WAIT_FOR_IDLE:
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
         break;
 
 
@@ -3771,7 +3779,7 @@ static void pgraph_method(NV2AState *d,
         break;
     }
     case NV097_FLIP_STALL:
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         while (true) {
             NV2A_DPRINTF("flip stall read: %d, write: %d, modulo: %d\n",
@@ -3803,7 +3811,7 @@ static void pgraph_method(NV2AState *d,
         break;
     case NV097_SET_CONTEXT_DMA_COLOR:
         /* try to get any straggling draws in before the surface's changed :/ */
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         pg->dma_color = parameter;
         break;
@@ -3824,7 +3832,7 @@ static void pgraph_method(NV2AState *d,
         break;
 
     case NV097_SET_SURFACE_CLIP_HORIZONTAL:
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         pg->surface_shape.clip_x =
             GET_MASK(parameter, NV097_SET_SURFACE_CLIP_HORIZONTAL_X);
@@ -3832,7 +3840,7 @@ static void pgraph_method(NV2AState *d,
             GET_MASK(parameter, NV097_SET_SURFACE_CLIP_HORIZONTAL_WIDTH);
         break;
     case NV097_SET_SURFACE_CLIP_VERTICAL:
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         pg->surface_shape.clip_y =
             GET_MASK(parameter, NV097_SET_SURFACE_CLIP_VERTICAL_Y);
@@ -3840,7 +3848,7 @@ static void pgraph_method(NV2AState *d,
             GET_MASK(parameter, NV097_SET_SURFACE_CLIP_VERTICAL_HEIGHT);
         break;
     case NV097_SET_SURFACE_FORMAT:
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         pg->surface_shape.color_format =
             GET_MASK(parameter, NV097_SET_SURFACE_FORMAT_COLOR);
@@ -3856,7 +3864,7 @@ static void pgraph_method(NV2AState *d,
             GET_MASK(parameter, NV097_SET_SURFACE_FORMAT_HEIGHT);
         break;
     case NV097_SET_SURFACE_PITCH:
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         pg->surface_color.pitch =
             GET_MASK(parameter, NV097_SET_SURFACE_PITCH_COLOR);
@@ -3864,12 +3872,12 @@ static void pgraph_method(NV2AState *d,
             GET_MASK(parameter, NV097_SET_SURFACE_PITCH_ZETA);
         break;
     case NV097_SET_SURFACE_COLOR_OFFSET:
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         pg->surface_color.offset = parameter;
         break;
     case NV097_SET_SURFACE_ZETA_OFFSET:
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         pg->surface_zeta.offset = parameter;
         break;
@@ -3893,7 +3901,7 @@ static void pgraph_method(NV2AState *d,
         pg->regs[NV_PGRAPH_TEXADDRESS0 + slot * 4] = parameter;
         break;
     case NV097_SET_CONTROL0: {
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         bool stencil_write_enable =
             parameter & NV097_SET_CONTROL0_STENCIL_WRITE_ENABLE;
@@ -4631,7 +4639,8 @@ static void pgraph_method(NV2AState *d,
             NV2A_GL_DGROUP_BEGIN("NV097_SET_BEGIN_END: 0x%x", parameter);
             assert(parameter <= NV097_SET_BEGIN_END_OP_POLYGON);
 
-            pgraph_update_surface(d, true, true, depth_test || stencil_test);
+            bool needs_zeta = depth_test || stencil_test;
+            pgraph_update_surface(d, true, true, needs_zeta, true, needs_zeta);
 
             assert(parameter < ARRAYSIZE(kelvin_primitive_map));
             pg->primitive_mode = parameter;
@@ -5013,7 +5022,7 @@ static void pgraph_method(NV2AState *d,
         break;
     case NV097_BACK_END_WRITE_SEMAPHORE_RELEASE: {
 
-        pgraph_update_surface(d, false, true, true);
+        pgraph_update_surface(d, false, true, true, true, true);
 
         //qemu_mutex_unlock(&d->pgraph.lock);
         //qemu_mutex_lock_iothread();
@@ -5091,9 +5100,6 @@ static void pgraph_method(NV2AState *d,
                           (clear_color & 0xFF) / 255.0f,         /* blue */
                           ((clear_color >> 24) & 0xFF) / 255.0f);/* alpha */
         }
-        pgraph_update_surface(d, true, write_color, write_zeta);
-
-        glEnable(GL_SCISSOR_TEST);
 
         unsigned int xmin = GET_MASK(pg->regs[NV_PGRAPH_CLEARRECTX],
                 NV_PGRAPH_CLEARRECTX_XMIN);
@@ -5105,7 +5111,7 @@ static void pgraph_method(NV2AState *d,
                 NV_PGRAPH_CLEARRECTY_YMAX);
 
         unsigned int scissor_x = xmin;
-        unsigned int scissor_y = pg->surface_shape.clip_height-ymax;
+        unsigned int scissor_y = pg->surface_shape.clip_height-ymax-1;
 
         unsigned int scissor_width = xmax-xmin+1;
         unsigned int scissor_height = ymax-ymin+1;
@@ -5113,8 +5119,21 @@ static void pgraph_method(NV2AState *d,
         pgraph_apply_anti_aliasing_factor(pg, &scissor_x, &scissor_y);
         pgraph_apply_anti_aliasing_factor(pg, &scissor_width, &scissor_height);
 
-        /* FIXME: Should this really be inverted instead of ymin? */
-        glScissor(scissor_x, scissor_y, scissor_width, scissor_height);
+        bool transfer = true;
+
+        /* Don't transfer data on fullscreen clears */
+        if (scissor_x == 0 && scissor_y == 0 &&
+            scissor_width == pg->surface_shape.clip_width &&
+            scissor_height == pg->surface_shape.clip_height) {
+            transfer = false;
+        } else {
+            /* FIXME: Should this really be inverted instead of ymin? */
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(scissor_x, scissor_y, scissor_width, scissor_height);
+        }
+
+        pgraph_update_surface(d, true, write_color, write_zeta,
+                                       transfer, transfer);
 
         NV2A_DPRINTF("------------------CLEAR 0x%x %d,%d - %d,%d  %x---------------\n",
             parameter, xmin, ymin, xmax, ymax, d->pgraph.regs[NV_PGRAPH_COLORCLEARVALUE]);
